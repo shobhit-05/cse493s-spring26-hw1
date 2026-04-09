@@ -1,6 +1,6 @@
 # Advanced ML HW 1
 
-This is the starter code for CSE493S HW 1 for Spring 2026. Please contact the TAs if you find any bugs in this repo.
+This is the starter code for CSE493S HW 1 for Spring 2026. For a complete description of the homework please see `ps.md` or `ps.pdf`. Please contact the TAs if you find any bugs in this repo. 
 
 ## Part 0 and 1
 
