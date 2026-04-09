@@ -1,4 +1,4 @@
-# Homework \#2
+# Homework \#1
 
 **CSE 493S/599S: Advanced Machine Learning**  
 **Prof. Sewoong Oh**  
