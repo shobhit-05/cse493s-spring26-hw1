@@ -1,0 +1,17 @@
+name: cse493
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - jupyter
+  - ipykernel
+  - pip:
+      - numpy
+      - matplotlib
+      - pandas
+      - tqdm
+      - torch
+      - transformers
+      - datasets
