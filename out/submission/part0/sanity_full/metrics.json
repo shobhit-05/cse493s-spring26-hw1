@@ -1,0 +1,9 @@
+{
+  "step": 900,
+  "train_loss": 0.0,
+  "train_acc": NaN,
+  "val_loss": 0.0,
+  "val_acc": NaN,
+  "test_loss": 0.0,
+  "test_acc": NaN
+}

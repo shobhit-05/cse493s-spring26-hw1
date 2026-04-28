@@ -1,0 +1,13 @@
+{
+  "mode": "sanity",
+  "out_dir": "out/submission/part0/sanity_full",
+  "seed": 42,
+  "steps": 1200,
+  "n_layer": 1,
+  "n_head": 2,
+  "n_embd": 32,
+  "bias": true,
+  "mask_prefix_tokens": 0,
+  "p": 97,
+  "op": "+"
+}

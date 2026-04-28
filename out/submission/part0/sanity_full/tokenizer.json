@@ -1,0 +1,14 @@
+{
+  "stoi": {
+    "<PAD>": 0,
+    "<BOS>": 1,
+    "<EOS>": 2,
+    "I": 3,
+    "love": 4,
+    "machine": 5,
+    "learning": 6
+  },
+  "bos_token": "<BOS>",
+  "eos_token": "<EOS>",
+  "pad_token": "<PAD>"
+}

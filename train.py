@@ -3,7 +3,6 @@ import json
 import math
 import os
 import random
-from dataclasses import asdict
 
 import torch
 import torch.nn.functional as F
@@ -238,7 +237,14 @@ def greedy_generate(model: GPT, start_ids: list[int], max_new_tokens: int):
     return idx.squeeze(0).tolist()
 
 
-def save_checkpoint(out_dir: str, model: GPT, tokenizer: Tokenizer, config: dict, metrics: dict):
+def save_checkpoint(
+    out_dir: str,
+    model: GPT,
+    tokenizer: Tokenizer,
+    config: dict,
+    metrics: dict,
+    gpt_cfg: GPTConfig,
+):
     os.makedirs(out_dir, exist_ok=True)
     torch.save(model.state_dict(), os.path.join(out_dir, "model.pt"))
     with open(os.path.join(out_dir, "tokenizer.json"), "w") as f:
@@ -254,6 +260,20 @@ def save_checkpoint(out_dir: str, model: GPT, tokenizer: Tokenizer, config: dict
         )
     with open(os.path.join(out_dir, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
+    with open(os.path.join(out_dir, "gpt_config.json"), "w") as f:
+        json.dump(
+            {
+                "block_size": gpt_cfg.block_size,
+                "vocab_size": gpt_cfg.vocab_size,
+                "n_layer": gpt_cfg.n_layer,
+                "n_head": gpt_cfg.n_head,
+                "n_embd": gpt_cfg.n_embd,
+                "dropout": gpt_cfg.dropout,
+                "bias": gpt_cfg.bias,
+            },
+            f,
+            indent=2,
+        )
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
 
@@ -344,7 +364,14 @@ def train(config: dict):
                     "test_loss": test_loss,
                     "test_acc": test_acc,
                 }
-                save_checkpoint(config["out_dir"], model, tokenizer, config, best_metrics)
+                save_checkpoint(
+                    config["out_dir"],
+                    model,
+                    tokenizer,
+                    config,
+                    best_metrics,
+                    gpt_cfg,
+                )
 
     if config["mode"] == "sanity":
         generated_ids = greedy_generate(

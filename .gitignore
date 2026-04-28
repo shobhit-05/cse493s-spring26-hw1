@@ -34,9 +34,12 @@ dist/
 *.egg-info/
 
 # Training artifacts
-out/
+# Keep only final deliverables under out/submission/.
+out/*
+!out/submission/
+!out/submission/**
+
 checkpoints/
-*.pt
 *.pth
 *.ckpt
 
