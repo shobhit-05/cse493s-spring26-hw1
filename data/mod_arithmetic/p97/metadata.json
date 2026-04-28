@@ -1,0 +1,41 @@
+{
+  "p": 97,
+  "range": "0 <= a,b <= p",
+  "ops": [
+    "+",
+    "-",
+    "/"
+  ],
+  "split_fractions": {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.09999999999999995
+  },
+  "notes": "For division, b values where b mod p == 0 are excluded (b in {0, p}).",
+  "per_operator_counts": {
+    "plus": {
+      "total": 9604,
+      "train": 7683,
+      "val": 960,
+      "test": 961
+    },
+    "minus": {
+      "total": 9604,
+      "train": 7683,
+      "val": 960,
+      "test": 961
+    },
+    "div": {
+      "total": 9408,
+      "train": 7526,
+      "val": 940,
+      "test": 942
+    }
+  },
+  "all_counts": {
+    "train": 22892,
+    "val": 2860,
+    "test": 2864,
+    "total": 28616
+  }
+}
