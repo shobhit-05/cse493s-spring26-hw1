@@ -1,8 +1,10 @@
 import argparse
+import csv
 import json
 import math
 import os
 import random
+import time
 
 import torch
 import torch.nn.functional as F
@@ -51,6 +53,7 @@ class Tokenizer:
             if tok not in self.stoi:
                 raise ValueError(f"Unknown token: {tok}")
             ids.append(self.stoi[tok])
+
         return ids
 
     def decode_ids(self, ids: list[int]) -> list[str]:
@@ -59,6 +62,7 @@ class Tokenizer:
             if idx not in self.itos:
                 raise ValueError(f"Unknown token id: {idx}")
             toks.append(self.itos[idx])
+
         return toks
 
 
@@ -72,10 +76,17 @@ def modular_result(a: int, b: int, op: str, p: int) -> int:
     if op == "-":
         return (a - b) % p
     if op == "/":
-        # b in [1, p-1] for prime p; inverse exists
         inv_b = pow(b, p - 2, p)
         return (a * inv_b) % p
+    
     raise ValueError(f"Unsupported op: {op}")
+
+
+def save_jsonl(path: str, rows: list[dict]):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
 
 
 def build_sanity_dataset(mask_prefix_tokens: int = 0):
@@ -95,17 +106,11 @@ def build_sanity_dataset(mask_prefix_tokens: int = 0):
         "loss_mask": loss_mask,
         "target_pos": None,
     }
+
     return tokenizer, [sample], [sample], [sample]
 
 
-def build_modular_dataset(
-    p: int,
-    op: str,
-    train_frac: float,
-    val_frac: float,
-    seed: int,
-):
-    # For division we skip b=0 to avoid undefined inverse.
+def build_modular_dataset(p: int, op: str, train_frac: float, val_frac: float, seed: int, save_split_dir: str | None = None):
     b_values = range(1, p) if op == "/" else range(0, p)
 
     pairs = [(a, b) for a in range(0, p) for b in b_values]
@@ -127,18 +132,17 @@ def build_modular_dataset(
 
     def to_samples(subset_pairs):
         out = []
+        records = []
         for a, b in subset_pairs:
             c = modular_result(a, b, op, p)
-            seq = equation_tokens(a, b, op, c, tokenizer)
-            ids = tokenizer.encode_tokens(seq)
+            seq_tokens = equation_tokens(a, b, op, c, tokenizer)
+            ids = tokenizer.encode_tokens(seq_tokens)
 
-            # Sequence layout after shift:
-            # y tokens are [a, op, b, =, c, EOS]
-            # We train loss only on c by default (position 4 in y).
+            # y = [a, op, b, =, c, EOS], so answer token c is at index 4.
             x = ids[:-1]
             y = ids[1:]
-            loss_mask = [0.0] * len(y)
             target_pos = 4
+            loss_mask = [0.0] * len(y)
             loss_mask[target_pos] = 1.0
 
             out.append(
@@ -149,11 +153,36 @@ def build_modular_dataset(
                     "target_pos": target_pos,
                 }
             )
-        return out
 
-    train_data = to_samples(train_pairs)
-    val_data = to_samples(val_pairs)
-    test_data = to_samples(test_pairs)
+            records.append({"a": a, "b": b, "c": c, "op": op, "p": p, "tokens": seq_tokens, "text": " ".join(seq_tokens)})
+        
+        return out, records
+
+    train_data, train_records = to_samples(train_pairs)
+    val_data, val_records = to_samples(val_pairs)
+    test_data, test_records = to_samples(test_pairs)
+
+    if save_split_dir is not None:
+        os.makedirs(save_split_dir, exist_ok=True)
+        save_jsonl(os.path.join(save_split_dir, "train.jsonl"), train_records)
+        save_jsonl(os.path.join(save_split_dir, "val.jsonl"), val_records)
+        save_jsonl(os.path.join(save_split_dir, "test.jsonl"), test_records)
+
+        split_summary = {
+            "p": p,
+            "op": op,
+            "train_frac": train_frac,
+            "val_frac": val_frac,
+            "seed": seed,
+            "train_size": len(train_data),
+            "val_size": len(val_data),
+            "test_size": len(test_data),
+            "total_size": len(train_data) + len(val_data) + len(test_data),
+            "division_excludes_b_zero": op == "/",
+        }
+        with open(os.path.join(save_split_dir, "summary.json"), "w") as f:
+            json.dump(split_summary, f, indent=2)
+
     return tokenizer, train_data, val_data, test_data
 
 
@@ -194,6 +223,30 @@ def compute_masked_loss(logits, targets, loss_mask):
     return masked.sum() / denom
 
 
+def get_lr(step: int, config: dict) -> float:
+    base_lr = config["lr"]
+    sched = config["lr_schedule"]
+    if sched == "none":
+        return base_lr
+    if sched == "cosine":
+        warmup_steps = max(0, config["warmup_steps"])
+        min_lr = config["min_lr"]
+        total_steps = max(1, config["steps"])
+
+        if step <= warmup_steps and warmup_steps > 0:
+            return base_lr * (step / warmup_steps)
+
+        if total_steps <= warmup_steps:
+            return base_lr
+
+        progress = (step - warmup_steps) / (total_steps - warmup_steps)
+        progress = max(0.0, min(1.0, progress))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr + cosine * (base_lr - min_lr)
+
+    raise ValueError(f"Unknown lr_schedule: {sched}")
+
+
 @torch.no_grad()
 def evaluate(model: GPT, data: list[dict], pad_id: int, batch_size: int):
     model.eval()
@@ -212,7 +265,6 @@ def evaluate(model: GPT, data: list[dict], pad_id: int, batch_size: int):
         total_loss += loss.item() * tokens_in_batch
         total_tokens += tokens_in_batch
 
-        # Accuracy on the answer token position.
         pred = torch.argmax(logits, dim=-1)
         for row, tgt_pos in enumerate(target_positions):
             if tgt_pos is None:
@@ -234,19 +286,38 @@ def greedy_generate(model: GPT, start_ids: list[int], max_new_tokens: int):
         logits = model(idx)
         next_id = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
         idx = torch.cat([idx, next_id], dim=1)
+
     return idx.squeeze(0).tolist()
+
+
+def write_history_files(out_dir: str, history: list[dict]):
+    json_path = os.path.join(out_dir, "history.json")
+    csv_path = os.path.join(out_dir, "history.csv")
+
+    with open(json_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    if history:
+        keys = list(history[0].keys())
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(history)
 
 
 def save_checkpoint(
     out_dir: str,
     model: GPT,
+    optimizer,
     tokenizer: Tokenizer,
     config: dict,
     metrics: dict,
     gpt_cfg: GPTConfig,
+    history: list[dict],
 ):
     os.makedirs(out_dir, exist_ok=True)
     torch.save(model.state_dict(), os.path.join(out_dir, "model.pt"))
+
     with open(os.path.join(out_dir, "tokenizer.json"), "w") as f:
         json.dump(
             {
@@ -258,8 +329,10 @@ def save_checkpoint(
             f,
             indent=2,
         )
+
     with open(os.path.join(out_dir, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
+
     with open(os.path.join(out_dir, "gpt_config.json"), "w") as f:
         json.dump(
             {
@@ -274,32 +347,31 @@ def save_checkpoint(
             f,
             indent=2,
         )
+
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
+
+    write_history_files(out_dir, history)
+    torch.save(optimizer.state_dict(), os.path.join(out_dir, "optimizer.pt"))
 
 
 def train(config: dict):
     set_seed(config["seed"])
-    # Assignment-focused defaults (kept internal to simplify CLI).
-    batch_size = 64
-    lr = 1e-3
-    beta1 = 0.9
-    beta2 = 0.95
-    weight_decay = 0.0
-    log_interval = 100
-    dropout = 0.0
+    os.makedirs(config["out_dir"], exist_ok=True)
 
     if config["mode"] == "sanity":
         tokenizer, train_data, val_data, test_data = build_sanity_dataset(
             mask_prefix_tokens=config["mask_prefix_tokens"]
         )
     elif config["mode"] == "modular":
+        split_dir = os.path.join(config["out_dir"], "splits") if config["save_splits"] else None
         tokenizer, train_data, val_data, test_data = build_modular_dataset(
             p=config["p"],
             op=config["op"],
-            train_frac=0.3,
-            val_frac=0.1,
+            train_frac=config["train_frac"],
+            val_frac=config["val_frac"],
             seed=config["seed"],
+            save_split_dir=split_dir,
         )
     else:
         raise ValueError(f"Unknown mode: {config['mode']}")
@@ -311,28 +383,121 @@ def train(config: dict):
         n_layer=config["n_layer"],
         n_head=config["n_head"],
         n_embd=config["n_embd"],
-        dropout=dropout,
+        dropout=config["dropout"],
         bias=config["bias"],
     )
 
     model = GPT(gpt_cfg).to(DEVICE)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=lr,
-        betas=(beta1, beta2),
-        weight_decay=weight_decay,
-    )
+    if config["optimizer"] == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config["lr"],
+            betas=(config["beta1"], config["beta2"]),
+            weight_decay=config["weight_decay"],
+        )
+    elif config["optimizer"] == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config["lr"],
+            betas=(config["beta1"], config["beta2"]),
+            weight_decay=config["weight_decay"],
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {config['optimizer']}")
 
     pad_id = tokenizer.stoi[tokenizer.pad_token]
     steps = config["steps"]
+    batch_size = config["batch_size"]
 
     best_val_loss = math.inf
     best_metrics = {}
+    history = []
+    early_stop_triggered = False
+    early_stop_reason = ""
+    start_step = 0
+    elapsed_offset_sec = 0.0
 
-    print(f"device={DEVICE} train={len(train_data)} val={len(val_data)} test={len(test_data)}")
 
-    for step in range(1, steps + 1):
+    early_mode = config["early_stop_mode"]
+    early_metric = config["early_stop_metric"]
+    early_threshold = config["early_stop_threshold"]
+    early_patience = config["early_stop_patience"]
+    early_min_steps = config["early_stop_min_steps"]
+    early_min_delta = config["early_stop_min_delta"]
+    best_early_metric = -math.inf if early_mode == "max" else math.inf
+    bad_eval_count = 0
+
+    if config["resume"]:
+        model_last_path = os.path.join(config["out_dir"], "model_last.pt")
+        history_path = os.path.join(config["out_dir"], "history.json")
+        optimizer_last_path = os.path.join(config["out_dir"], "optimizer_last.pt")
+        metrics_path = os.path.join(config["out_dir"], "metrics.json")
+
+        if os.path.exists(model_last_path):
+            model.load_state_dict(torch.load(model_last_path, map_location=DEVICE))
+            print(f"[resume] loaded model from {model_last_path}")
+        else:
+            print(f"[resume] model_last.pt not found in {config['out_dir']}; starting fresh")
+
+        if os.path.exists(optimizer_last_path):
+            try:
+                optimizer.load_state_dict(torch.load(optimizer_last_path, map_location=DEVICE))
+                print(f"[resume] loaded optimizer from {optimizer_last_path}")
+            except Exception as e:
+                print(f"[resume] failed to load optimizer state ({e}); continuing with fresh optimizer")
+
+        if os.path.exists(history_path):
+            try:
+                with open(history_path, "r") as f:
+                    history = json.load(f)
+                if history:
+                    start_step = int(history[-1].get("step", 0))
+                    elapsed_offset_sec = float(history[-1].get("elapsed_sec", 0.0))
+                    print(f"[resume] history found with last step={start_step}")
+            except Exception as e:
+                print(f"[resume] failed to load history ({e}); continuing from step 0")
+
+        if os.path.exists(metrics_path):
+            try:
+                with open(metrics_path, "r") as f:
+                    best_metrics = json.load(f)
+                best_val_loss = float(best_metrics.get("val_loss", math.inf))
+            except Exception:
+                pass
+
+        if history:
+            prior_values = [
+                row.get(early_metric)
+                for row in history
+                if row.get(early_metric) is not None and not math.isnan(row.get(early_metric))
+            ]
+            if prior_values:
+                best_early_metric = (
+                    max(prior_values) if early_mode == "max" else min(prior_values)
+                )
+
+        if start_step >= steps:
+            print(
+                f"[resume] run already reached step={start_step} (target steps={steps}); "
+                "nothing to do."
+            )
+            print("best metrics:", json.dumps(best_metrics, indent=2))
+            print(f"checkpoint dir: {config['out_dir']}")
+            return
+
+    print(
+        f"device={DEVICE} train={len(train_data)} val={len(val_data)} test={len(test_data)} "
+        f"batch_size={batch_size}"
+    )
+
+    start_time = time.time()
+
+    for step in range(start_step + 1, steps + 1):
         model.train()
+
+        current_lr = get_lr(step, config)
+        for pg in optimizer.param_groups:
+            pg["lr"] = current_lr
 
         batch = random.sample(train_data, k=min(batch_size, len(train_data)))
         x, y, loss_mask, _ = collate_batch(batch, pad_id)
@@ -342,36 +507,96 @@ def train(config: dict):
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if config["grad_clip"] > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
         optimizer.step()
 
-        if step == 1 or step % log_interval == 0 or step == steps:
+        should_eval = step == 1 or step % config["eval_interval"] == 0 or step == steps
+        if should_eval:
             train_loss, train_acc = evaluate(model, train_data, pad_id, batch_size)
             val_loss, val_acc = evaluate(model, val_data, pad_id, batch_size)
-            print(
-                f"step={step} train_loss={train_loss:.6f} train_acc={train_acc:.4f} "
-                f"val_loss={val_loss:.6f} val_acc={val_acc:.4f}"
-            )
+            test_loss, test_acc = evaluate(model, test_data, pad_id, batch_size)
+
+            row = {
+                "step": step,
+                "lr": current_lr,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "test_loss": test_loss,
+                "test_acc": test_acc,
+                "elapsed_sec": elapsed_offset_sec + (time.time() - start_time),
+            }
+            history.append(row)
+
+            # Autosave current progress so interrupted runs can resume.
+            write_history_files(config["out_dir"], history)
+            torch.save(model.state_dict(), os.path.join(config["out_dir"], "model_last.pt"))
+            torch.save(optimizer.state_dict(), os.path.join(config["out_dir"], "optimizer_last.pt"))
+
+            if step == 1 or step % config["log_interval"] == 0 or step == steps:
+                print(
+                    f"step={step} train_loss={train_loss:.6f} train_acc={train_acc:.4f} "
+                    f"val_loss={val_loss:.6f} val_acc={val_acc:.4f} "
+                    f"test_loss={test_loss:.6f} test_acc={test_acc:.4f}"
+                )
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                test_loss, test_acc = evaluate(model, test_data, pad_id, batch_size)
-                best_metrics = {
-                    "step": step,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "val_loss": val_loss,
-                    "val_acc": val_acc,
-                    "test_loss": test_loss,
-                    "test_acc": test_acc,
-                }
+                best_metrics = dict(row)
                 save_checkpoint(
                     config["out_dir"],
                     model,
+                    optimizer,
                     tokenizer,
                     config,
                     best_metrics,
                     gpt_cfg,
+                    history,
                 )
+
+            if config["early_stop"]:
+                metric_value = row[early_metric]
+                if math.isnan(metric_value):
+                    # Ignore NaN metric evaluations for early stopping.
+                    metric_improved = False
+                    threshold_hit = False
+                else:
+                    if early_mode == "max":
+                        metric_improved = metric_value > (best_early_metric + early_min_delta)
+                        threshold_hit = (
+                            early_threshold is not None and metric_value >= early_threshold
+                        )
+                    else:
+                        metric_improved = metric_value < (best_early_metric - early_min_delta)
+                        threshold_hit = (
+                            early_threshold is not None and metric_value <= early_threshold
+                        )
+
+                if metric_improved:
+                    best_early_metric = metric_value
+                    bad_eval_count = 0
+                else:
+                    bad_eval_count += 1
+
+                if step >= early_min_steps and threshold_hit:
+                    early_stop_triggered = True
+                    early_stop_reason = (
+                        f"threshold_reached: {early_metric}={metric_value:.6f} "
+                        f"at step={step}"
+                    )
+                    print(f"[early_stop] {early_stop_reason}")
+                    break
+
+                if step >= early_min_steps and early_patience > 0 and bad_eval_count >= early_patience:
+                    early_stop_triggered = True
+                    early_stop_reason = (
+                        f"patience_exhausted: {early_metric}={metric_value:.6f}, "
+                        f"bad_eval_count={bad_eval_count}, step={step}"
+                    )
+                    print(f"[early_stop] {early_stop_reason}")
+                    break
 
     if config["mode"] == "sanity":
         generated_ids = greedy_generate(
@@ -380,6 +605,19 @@ def train(config: dict):
             max_new_tokens=5,
         )
         print("generated:", tokenizer.decode_ids(generated_ids))
+
+    # Always save final history even if no improvement happened.
+    write_history_files(config["out_dir"], history)
+
+    # Save final model as an auxiliary artifact.
+    torch.save(model.state_dict(), os.path.join(config["out_dir"], "model_last.pt"))
+    torch.save(optimizer.state_dict(), os.path.join(config["out_dir"], "optimizer_last.pt"))
+
+    if early_stop_triggered:
+        best_metrics["early_stop"] = True
+        best_metrics["early_stop_reason"] = early_stop_reason
+    else:
+        best_metrics["early_stop"] = False
 
     print("best metrics:", json.dumps(best_metrics, indent=2))
     print(f"checkpoint dir: {config['out_dir']}")
@@ -393,18 +631,53 @@ def parse_args():
 
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=1200)
+    parser.add_argument("--batch_size", type=int, default=64)
+
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--min_lr", type=float, default=1e-4)
+    parser.add_argument("--lr_schedule", type=str, default="none", choices=["none", "cosine"])
+    parser.add_argument("--warmup_steps", type=int, default=0)
+    parser.add_argument("--beta1", type=float, default=0.9)
+    parser.add_argument("--beta2", type=float, default=0.95)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--optimizer", type=str, default="adam", choices=["adam", "adamw"])
+    parser.add_argument("--grad_clip", type=float, default=0.0)
+    parser.add_argument("--dropout", type=float, default=0.0)
+
+    parser.add_argument("--eval_interval", type=int, default=100)
+    parser.add_argument("--log_interval", type=int, default=100)
 
     parser.add_argument("--n_layer", type=int, default=1)
     parser.add_argument("--n_head", type=int, default=2)
     parser.add_argument("--n_embd", type=int, default=32)
-    parser.add_argument("--bias", action="store_true")
+    parser.add_argument("--bias", action=argparse.BooleanOptionalAction, default=True)
 
-    # Sanity mode only
     parser.add_argument("--mask_prefix_tokens", type=int, default=0)
 
-    # Modular mode only
     parser.add_argument("--p", type=int, default=97)
     parser.add_argument("--op", type=str, default="+", choices=["+", "-", "/"])
+    parser.add_argument("--train_frac", type=float, default=0.3)
+    parser.add_argument("--val_frac", type=float, default=0.1)
+    parser.add_argument("--save_splits", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False)
+
+    parser.add_argument("--early_stop", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--early_stop_metric",
+        type=str,
+        default="val_acc",
+        choices=["train_loss", "train_acc", "val_loss", "val_acc", "test_loss", "test_acc"],
+    )
+    parser.add_argument(
+        "--early_stop_mode",
+        type=str,
+        default="max",
+        choices=["max", "min"],
+    )
+    parser.add_argument("--early_stop_threshold", type=float, default=None)
+    parser.add_argument("--early_stop_patience", type=int, default=0)
+    parser.add_argument("--early_stop_min_steps", type=int, default=0)
+    parser.add_argument("--early_stop_min_delta", type=float, default=0.0)
 
     return parser.parse_args()
 

@@ -1,0 +1,12 @@
+{
+  "p": 113,
+  "op": "+",
+  "train_frac": 0.3,
+  "val_frac": 0.1,
+  "seed": 42,
+  "train_size": 3830,
+  "val_size": 1276,
+  "test_size": 7663,
+  "total_size": 12769,
+  "division_excludes_b_zero": false
+}

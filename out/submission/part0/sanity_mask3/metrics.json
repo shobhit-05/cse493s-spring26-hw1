@@ -1,9 +1,10 @@
 {
-  "step": 700,
+  "step": 400,
   "train_loss": 0.0,
   "train_acc": NaN,
   "val_loss": 0.0,
   "val_acc": NaN,
   "test_loss": 0.0,
-  "test_acc": NaN
+  "test_acc": NaN,
+  "elapsed_sec": 1.6190910339355469
 }
