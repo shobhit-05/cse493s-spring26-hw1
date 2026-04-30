@@ -3,11 +3,22 @@
   "out_dir": "out/submission/part0/sanity_full",
   "seed": 42,
   "steps": 1200,
+  "batch_size": 1,
+  "lr": 0.01,
+  "beta1": 0.9,
+  "beta2": 0.95,
+  "weight_decay": 0.0,
+  "dropout": 0.0,
+  "eval_interval": 50,
+  "log_interval": 100,
   "n_layer": 1,
   "n_head": 2,
   "n_embd": 32,
   "bias": true,
   "mask_prefix_tokens": 0,
   "p": 97,
-  "op": "+"
+  "op": "+",
+  "train_frac": 0.3,
+  "val_frac": 0.1,
+  "save_splits": true
 }

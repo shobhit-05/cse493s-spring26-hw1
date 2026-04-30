@@ -8,7 +8,9 @@ or change their signatures.
 You may import from other files in your repo. You may add helper functions.
 Just make sure the three functions below work as specified.
 """
-from model import GPT
+
+from inference import greedy_generate, load_model_and_tokenizer as _load_model_and_tokenizer
+
 
 def load_model_and_tokenizer(checkpoint_dir: str):
     """
@@ -24,15 +26,18 @@ def load_model_and_tokenizer(checkpoint_dir: str):
         whatever object your predict_answer / generate_sanity_check functions
         expect — we do not constrain its type.
     """
-
-    raise NotImplementedError
+    return _load_model_and_tokenizer(checkpoint_dir)
 
 
 def get_bos_token(tokenizer=None):
     """
     Get the BOS token for the tokenizer, for part 0 of the assignment.
     """
-    raise NotImplementedError
+    if tokenizer is None:
+        return "<BOS>"
+    if not hasattr(tokenizer, "bos_token"):
+        raise ValueError("Tokenizer does not expose bos_token.")
+    return tokenizer.bos_token
 
 
 def predict_answer(model, tokenizer, a: int, b: int, op: str, p: int) -> int:
@@ -52,4 +57,22 @@ def predict_answer(model, tokenizer, a: int, b: int, op: str, p: int) -> int:
         You are responsible for formatting the input according to your
         training scheme and parsing the model's output back to an integer.
     """
-    raise NotImplementedError
+    if op not in {"+", "-", "/"}:
+        raise ValueError(f"Unsupported operator: {op}")
+    if not (0 <= a < p and 0 <= b < p):
+        raise ValueError("a and b must be in [0, p).")
+
+    prompt = [tokenizer.bos_token, str(a), op, str(b), "="]
+    prompt_ids = tokenizer.encode_tokens(prompt)
+
+    out_ids = greedy_generate(model, prompt_ids, max_new_tokens=1)
+    answer_tok = tokenizer.decode_ids([out_ids[-1]])[0]
+
+    try:
+        pred = int(answer_tok)
+    except ValueError as exc:
+        raise ValueError(f"Model output token is not an integer: {answer_tok}") from exc
+
+    if pred < 0 or pred >= p:
+        pred = pred % p
+    return pred
