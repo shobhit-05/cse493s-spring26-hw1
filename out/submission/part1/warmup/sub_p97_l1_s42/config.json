@@ -26,11 +26,5 @@
   "train_frac": 0.3,
   "val_frac": 0.1,
   "save_splits": true,
-  "early_stop": false,
-  "early_stop_metric": "val_acc",
-  "early_stop_mode": "max",
-  "early_stop_threshold": null,
-  "early_stop_patience": 0,
-  "early_stop_min_steps": 0,
-  "early_stop_min_delta": 0.0
+  "resume": true
 }

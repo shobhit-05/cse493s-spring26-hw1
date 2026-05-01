@@ -412,20 +412,8 @@ def train(config: dict):
     best_val_loss = math.inf
     best_metrics = {}
     history = []
-    early_stop_triggered = False
-    early_stop_reason = ""
     start_step = 0
     elapsed_offset_sec = 0.0
-
-
-    early_mode = config["early_stop_mode"]
-    early_metric = config["early_stop_metric"]
-    early_threshold = config["early_stop_threshold"]
-    early_patience = config["early_stop_patience"]
-    early_min_steps = config["early_stop_min_steps"]
-    early_min_delta = config["early_stop_min_delta"]
-    best_early_metric = -math.inf if early_mode == "max" else math.inf
-    bad_eval_count = 0
 
     if config["resume"]:
         model_last_path = os.path.join(config["out_dir"], "model_last.pt")
@@ -464,17 +452,6 @@ def train(config: dict):
                 best_val_loss = float(best_metrics.get("val_loss", math.inf))
             except Exception:
                 pass
-
-        if history:
-            prior_values = [
-                row.get(early_metric)
-                for row in history
-                if row.get(early_metric) is not None and not math.isnan(row.get(early_metric))
-            ]
-            if prior_values:
-                best_early_metric = (
-                    max(prior_values) if early_mode == "max" else min(prior_values)
-                )
 
         if start_step >= steps:
             print(
@@ -556,48 +533,6 @@ def train(config: dict):
                     history,
                 )
 
-            if config["early_stop"]:
-                metric_value = row[early_metric]
-                if math.isnan(metric_value):
-                    # Ignore NaN metric evaluations for early stopping.
-                    metric_improved = False
-                    threshold_hit = False
-                else:
-                    if early_mode == "max":
-                        metric_improved = metric_value > (best_early_metric + early_min_delta)
-                        threshold_hit = (
-                            early_threshold is not None and metric_value >= early_threshold
-                        )
-                    else:
-                        metric_improved = metric_value < (best_early_metric - early_min_delta)
-                        threshold_hit = (
-                            early_threshold is not None and metric_value <= early_threshold
-                        )
-
-                if metric_improved:
-                    best_early_metric = metric_value
-                    bad_eval_count = 0
-                else:
-                    bad_eval_count += 1
-
-                if step >= early_min_steps and threshold_hit:
-                    early_stop_triggered = True
-                    early_stop_reason = (
-                        f"threshold_reached: {early_metric}={metric_value:.6f} "
-                        f"at step={step}"
-                    )
-                    print(f"[early_stop] {early_stop_reason}")
-                    break
-
-                if step >= early_min_steps and early_patience > 0 and bad_eval_count >= early_patience:
-                    early_stop_triggered = True
-                    early_stop_reason = (
-                        f"patience_exhausted: {early_metric}={metric_value:.6f}, "
-                        f"bad_eval_count={bad_eval_count}, step={step}"
-                    )
-                    print(f"[early_stop] {early_stop_reason}")
-                    break
-
     if config["mode"] == "sanity":
         generated_ids = greedy_generate(
             model,
@@ -612,12 +547,6 @@ def train(config: dict):
     # Save final model as an auxiliary artifact.
     torch.save(model.state_dict(), os.path.join(config["out_dir"], "model_last.pt"))
     torch.save(optimizer.state_dict(), os.path.join(config["out_dir"], "optimizer_last.pt"))
-
-    if early_stop_triggered:
-        best_metrics["early_stop"] = True
-        best_metrics["early_stop_reason"] = early_stop_reason
-    else:
-        best_metrics["early_stop"] = False
 
     print("best metrics:", json.dumps(best_metrics, indent=2))
     print(f"checkpoint dir: {config['out_dir']}")
@@ -660,24 +589,6 @@ def parse_args():
     parser.add_argument("--val_frac", type=float, default=0.1)
     parser.add_argument("--save_splits", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False)
-
-    parser.add_argument("--early_stop", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument(
-        "--early_stop_metric",
-        type=str,
-        default="val_acc",
-        choices=["train_loss", "train_acc", "val_loss", "val_acc", "test_loss", "test_acc"],
-    )
-    parser.add_argument(
-        "--early_stop_mode",
-        type=str,
-        default="max",
-        choices=["max", "min"],
-    )
-    parser.add_argument("--early_stop_threshold", type=float, default=None)
-    parser.add_argument("--early_stop_patience", type=int, default=0)
-    parser.add_argument("--early_stop_min_steps", type=int, default=0)
-    parser.add_argument("--early_stop_min_delta", type=float, default=0.0)
 
     return parser.parse_args()
 
