@@ -1,4 +1,4 @@
-run,train_acc_1_step,test_acc_1_step,grokking_delay_steps
-baseline_div_p97,,,
-abl_weight_decay_0p05,,,
-abl_trainfrac_0p2,,,
+run,train_acc_1_step,test_acc_1_step,grokking_delay_steps_strict,train_acc_99_step,test_acc_99_step,grokking_delay_steps_99
+baseline_div_p97,,,,,,
+abl_adamw_wd1_trainfrac0p3,222000.0,270000.0,48000.0,58000.0,102000.0,44000.0
+abl_adamw_wd1_trainfrac0p5,,,,264000.0,264000.0,0.0

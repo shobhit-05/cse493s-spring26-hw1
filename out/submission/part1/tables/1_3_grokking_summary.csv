@@ -1,2 +1,2 @@
-run,train_acc_1_step,test_acc_1_step,grokking_delay_steps
-baseline_div_p97,,,
+run,train_acc_99_step,val_acc_99_step,test_acc_99_step,val_delay_after_train_99,test_delay_after_train_99
+baseline_div_p97,,,,,
