@@ -2,6 +2,10 @@
 
 Linda Jin, Shobhit Gupta
 
+## Report PDF
+
+Find our full report (Part0-3) including all code and analysis at `CSE_ML_HW1_report.pdf`.
+
 ## Part 0 and 1
 
 The file `model.py` contains an implementation of a transformer model. The file `part_0_1_contract.py` contains some function signatures that would make autograding less painful for the TAs. The notebooks `part0.ipynb` and `part1.ipynb` call inference code `inference.py` and training code `train.py` respectively to visualize training and evaluation of the transformer. All part 0 and 1 artifacts and analysis were included on these two notebooks.
